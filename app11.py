@@ -27,13 +27,11 @@ from database import (
 )
 from genetic_algorithm import GeneticAlgorithm, TimetableChromosome, PERIODS_PER_DAY
 
-# Initialize DB (create tables if needed)
+# Initialize the database (this will create tables if they don't exist)
 init_db()
 create_timetables_table()
 
-# -----------------------------
-# Utilities and PDF helpers
-# -----------------------------
+# --- Utility for Confirmation Dialog (Replacement for st.confirm) ---
 def confirm_action(message, key_prefix):
     st.markdown(f"**Confirmation needed:** {message}", unsafe_allow_html=True)
     col_yes, col_no = st.columns([1, 4])
@@ -44,8 +42,9 @@ def confirm_action(message, key_prefix):
         if st.button("No, cancel", key=f"{key_prefix}_no_button"):
             st.info("Action cancelled.")
             return False
-    return None
+    return None  # Return None if no button has been pressed yet
 
+# --- PDF builder for timetable export ---
 def build_pdf_from_timetable(grids_by_semester: dict, title: str = "Automatic Timetable") -> bytes:
     """
     grids_by_semester: dict[str -> dict[DAY -> list[slot strings]]]
@@ -63,9 +62,10 @@ def build_pdf_from_timetable(grids_by_semester: dict, title: str = "Automatic Ti
     story.append(Paragraph(title, styles["Title"]))
     story.append(Spacer(1, 12))
 
+    # Use your app's day names
     day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
 
-    for section_name, day_map in grids_by_semester.items():
+    for sem_name, day_map in grids_by_semester.items():
         max_slots = max((len(v) for v in day_map.values()), default=0)
         header = ["Day"] + [f"Slot {i+1}" for i in range(max_slots)]
         data = [header]
@@ -77,7 +77,7 @@ def build_pdf_from_timetable(grids_by_semester: dict, title: str = "Automatic Ti
             row = [day] + slots + [""] * (max_slots - len(slots))
             data.append(row)
 
-        story.append(Paragraph(section_name, styles["Heading2"]))
+        story.append(Paragraph(f"Semester: {sem_name}", styles["Heading2"]))
         t = Table(data, repeatRows=1)
         t.setStyle(TableStyle([
             ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
@@ -97,14 +97,16 @@ def build_pdf_from_timetable(grids_by_semester: dict, title: str = "Automatic Ti
     buf.close()
     return pdf_bytes
 
+# --- Convert GA result → grids for saving/export ---
 def to_shareable_grids(chromosome: TimetableChromosome, all_data) -> dict:
     """
-    Overall timetable → grids for PDF:
-    { "Semester X": { "Monday": [...], ... } }
+    Build grids for PDF from the GA result:
+    Returns: { "Semester X": { "Monday": [cell0..], "Tuesday": [...], ... } }
     """
     day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
     slots_per_day = PERIODS_PER_DAY
 
+    # group classes by semester
     by_sem = defaultdict(list)
     for sc in chromosome.scheduled_classes:
         by_sem[sc.semester_id].append(sc)
@@ -113,6 +115,7 @@ def to_shareable_grids(chromosome: TimetableChromosome, all_data) -> dict:
     for sem_id, entries in by_sem.items():
         sem_obj = all_data['semesters_by_id'].get(sem_id)
         sem_name = f"Semester {getattr(sem_obj, 'semester_number', sem_id)}"
+        # init blank grid
         grids[sem_name] = {d: [""] * slots_per_day for d in day_order}
 
         for sc in entries:
@@ -120,55 +123,17 @@ def to_shareable_grids(chromosome: TimetableChromosome, all_data) -> dict:
             fac_names = ", ".join([f.name for f in sc.faculty_objs]) if sc.faculty_objs else ""
             cell_text = f"{course_code}\n({fac_names})" if fac_names else course_code
 
+            # Fill all periods occupied by this class
             for p in range(sc.start_period, sc.end_period + 1):
                 if 1 <= p <= slots_per_day and sc.day in grids[sem_name]:
-                    idx = p - 1
+                    idx = p - 1  # zero-based
                     if grids[sem_name][sc.day][idx]:
-                        grids[sem_name][sc.day][idx] += f"\n—\n{cell_text}"
+                        grids[sem_name][sc.day][idx] += f"\n—\n{cell_text}"  # collision mark
                     else:
                         grids[sem_name][sc.day][idx] = cell_text
     return grids
 
-def build_faculty_grids(chromosome: TimetableChromosome, all_data):
-    """
-    Build grids per faculty:
-    returns dict[faculty_id] = (faculty_name, { "Monday": [...], ... })
-    Cell text: "<COURSE_CODE> (Sem X)"
-    """
-    day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-    slots_per_day = PERIODS_PER_DAY
-    out = {}
-
-    def ensure(fid):
-        if fid not in out:
-            name = all_data['faculty_by_id'][fid].name if fid in all_data['faculty_by_id'] else f"Faculty {fid}"
-            out[fid] = (name, {d: [""] * slots_per_day for d in day_order})
-
-    for sc in chromosome.scheduled_classes:
-        sem_obj = sc.semester_obj or all_data['semesters_by_id'].get(sc.semester_id)
-        sem_num = getattr(sem_obj, 'semester_number', sc.semester_id)
-        course_code = sc.course_obj.code if sc.course_obj else ""
-        cell_text = f"{course_code} (Sem {sem_num})"
-
-        # Try faculty_objs, fall back to faculty_ids
-        fac_ids = [f.id for f in sc.faculty_objs] if getattr(sc, "faculty_objs", None) else (sc.faculty_ids or [])
-        for fid in fac_ids:
-            ensure(fid)
-            _, grid = out[fid]
-
-            for p in range(sc.start_period, sc.end_period + 1):
-                if 1 <= p <= slots_per_day and sc.day in grid:
-                    idx = p - 1
-                    if grid[sc.day][idx]:
-                        grid[sc.day][idx] += f"\n—\n{cell_text}"
-                    else:
-                        grid[sc.day][idx] = cell_text
-
-    return out
-
-# -----------------------------
-# Page Navigation + Pages
-# -----------------------------
+# --- Page Navigation Functions ---
 def set_page(page_name):
     st.session_state['current_page'] = page_name
 
@@ -186,7 +151,7 @@ def show_login_register_page():
             if user and check_password(password, user['password_hash']):
                 st.session_state['logged_in'] = True
                 st.session_state['username'] = username
-                st.session_state['user_id'] = user['id']
+                st.session_state['user_id'] = user['id']  # Store user ID
                 st.success("Logged in successfully!")
                 set_page("welcome")
                 st.rerun()
@@ -239,6 +204,7 @@ def manage_departments_page():
     st.header("Department Management")
     user_id = st.session_state['user_id']
 
+    # Add Department Form
     with st.expander("Add New Department"):
         new_dept_name = st.text_input("Department Name")
         if st.button("Add Department"):
@@ -448,7 +414,7 @@ def manage_courses_page():
         course_name  = st.text_input("Course Name (e.g., Data Structures)")
         course_type = st.radio("Course Type", ('theory', 'lab'))
 
-        hours_per_week = st.number_input("Hours per week (Theory)", min_value=1, step=1) if course_type == 'theory' else 2
+        hours_per_week = st.number_input("Hours per week (Theory)", min_value=1, step=1) if course_type == 'theory' else 2  # Fixed for labs
         if course_type == 'lab':
             st.write("Lab courses are fixed at 2 hours continuously.")
         
@@ -710,208 +676,27 @@ def manage_faculty_preferences_page():
     else:
         st.info("No faculty preferences added yet.")
 
-# def generate_timetable_page():
-#     st.header("Timetable Generation")
-#     user_id = st.session_state['user_id']
-#     st.write("Configure Genetic Algorithm parameters and click 'Generate'.")
-
-#     col1, col2, col3, col4 = st.columns(4)
-#     with col1:
-#         population_size = st.number_input("Population Size", min_value=50, max_value=1000, value=200, step=50, help="Number of candidate timetables in each generation.")
-#     with col2:
-#         generations = st.number_input("Generations", min_value=100, max_value=5000, value=1000, step=100, help="Number of iterations the algorithm will run.")
-#     with col3:
-#         mutation_rate = st.slider("Mutation Rate (per gene)", min_value=0.01, max_value=0.5, value=0.05, step=0.01, help="Probability of a single class assignment changing.")
-#     with col4:
-#         mutation_chance_smart = st.slider("Smart Mutation Chance", min_value=0.0, max_value=1.0, value=0.8, step=0.05, help="Probability that mutation tries to find an empty slot (0=purely random, 1=always try smart).")
-#     crossover_rate = st.slider("Crossover Rate", min_value=0.5, max_value=1.0, value=0.8, step=0.05, help="Probability of two parent timetables exchanging genetic material.")
-
-#     st.markdown("---")
-
-#     if st.button("Generate Timetable", type="primary"):
-#         st.info("Step 1: Loading required data from the database...")
-#         try:
-#             all_raw_data = load_all_data(user_id)
-#             classes_to_schedule = get_classes_to_schedule(all_raw_data)
-
-#             if not classes_to_schedule:
-#                 st.error("No classes defined or mapped. Please add courses and mappings first.")
-#                 return
-#             if not all_raw_data['semesters_by_id']:
-#                 st.error("No semesters defined. Please add semesters.")
-#                 return
-#             if not all_raw_data['faculty_by_id']:
-#                 st.error("No faculty defined. Please add faculty.")
-#                 return
-
-#             st.success(f"Loaded data: {len(classes_to_schedule)} scheduled class items to place.")
-#             st.info("Step 2: Initializing and running Genetic Algorithm...")
-
-#             ga = GeneticAlgorithm(
-#                 classes_to_schedule,
-#                 all_raw_data,
-#                 population_size=population_size,
-#                 generations=generations,
-#                 mutation_rate=mutation_rate,
-#                 mutation_chance_smart=mutation_chance_smart,
-#                 crossover_rate=crossover_rate
-#             )
-
-#             st.subheader("Genetic Algorithm Progress")
-#             progress_bar = st.progress(0)
-#             status_text = st.empty()
-#             fitness_text = st.empty()
-
-#             def ga_progress_callback(current_gen, total_gen, current_fitness):
-#                 progress_percent = int((current_gen / total_gen) * 100)
-#                 progress_bar.progress(progress_percent)
-#                 status_text.text(f"Generation {current_gen}/{total_gen}")
-#                 fitness_text.text(f"Current Best Fitness: {current_fitness:.2f}")
-#                 time.sleep(0.001)
-
-#             with st.spinner("Running Genetic Algorithm... This might take a while for large data sets."):
-#                 best_timetable_chromosome = ga.run(progress_callback=ga_progress_callback)
-
-#             progress_bar.progress(100)
-#             status_text.text("Generation Complete!")
-#             time.sleep(0.5)
-
-#             st.session_state['generated_timetable_chromosome'] = best_timetable_chromosome
-#             st.session_state['data_for_analysis'] = all_raw_data 
-
-#             st.subheader("Results")
-#             st.write(f"Final Best Fitness: **{best_timetable_chromosome.fitness:.2f}**")
-
-#             if best_timetable_chromosome.fitness >= 0:
-#                 st.balloons()
-#                 st.success("Timetable generated successfully with all hard constraints satisfied! 🎉")
-#             else:
-#                 st.warning("Timetable generated, but some hard constraints might still be violated. Consider increasing generations or population size, or adjust penalty values.")
-            
-#             st.markdown("---")
-#             display_generated_timetable(best_timetable_chromosome, all_raw_data)
-
-#             # --- Save timetable snapshot (existing flow) ---
-#             st.markdown("---")
-#             st.subheader("Save This Timetable")
-#             save_name = st.text_input("Enter a name for this timetable:", value=f"Timetable_{datetime.now().strftime('%Y%m%d_%H%M')}")
-#             if st.button("Save Timetable", type="secondary"):
-#                 if save_name:
-#                     if add_saved_timetable(user_id, save_name, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), best_timetable_chromosome, all_raw_data):
-#                         st.success(f"Timetable '{save_name}' saved successfully!")
-#                     else:
-#                         st.error(f"Failed to save timetable. A timetable with the name '{save_name}' might already exist.")
-#                 else:
-#                     st.warning("Please enter a name for the timetable.")
-
-#             # --- Export whole timetable PDF ---
-#             st.markdown("---")
-#             st.subheader("Export (Whole Timetable)")
-#             try:
-#                 grids = to_shareable_grids(best_timetable_chromosome, all_raw_data)
-#                 pdf_title = save_name or f"Timetable_{datetime.now().strftime('%Y%m%d_%H%M')}"
-#                 pdf_bytes = build_pdf_from_timetable(grids, title=pdf_title)
-#                 st.download_button(
-#                     label="Download Entire Timetable as PDF",
-#                     data=pdf_bytes,
-#                     file_name=f"{pdf_title.replace(' ', '_')}.pdf",
-#                     mime="application/pdf"
-#                 )
-#             except Exception as e:
-#                 st.warning(f"Could not build PDF: {e}")
-
-#             # --- Faculty Timetables (display + per-faculty PDF download) ---
-#             st.markdown("---")
-#             st.subheader("Faculty Timetables")
-
-#             fac_grids = build_faculty_grids(best_timetable_chromosome, all_raw_data)
-#             if not fac_grids:
-#                 st.info("No faculty assignments found in the generated timetable.")
-#             else:
-#                 # Build selection of only those faculty who were assigned some class
-#                 choices = []
-#                 for fid, (fname, grid) in fac_grids.items():
-#                     total_cells = sum(1 for d in grid for v in grid[d] if v)
-#                     if total_cells > 0:
-#                         choices.append((fid, fname))
-#                 if not choices:
-#                     st.info("No faculty have scheduled classes.")
-#                 else:
-#                     # Select a faculty to preview & download
-#                     display_names = {fid: fname for fid, fname in choices}
-#                     chosen_fid = st.selectbox(
-#                         "Select Faculty",
-#                         options=[fid for fid, _ in choices],
-#                         format_func=lambda fid: display_names[fid]
-#                     )
-
-#                     if chosen_fid is not None:
-#                         fname, grid = fac_grids[chosen_fid]
-
-#                         # Show HTML table preview
-#                         day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-#                         periods_cols = [f"Period {i}" for i in range(1, PERIODS_PER_DAY + 1)]
-#                         df = pd.DataFrame('', index=day_order, columns=periods_cols)
-#                         for day in day_order:
-#                             for i in range(PERIODS_PER_DAY):
-#                                 if i < len(grid[day]):
-#                                     df.iloc[day_order.index(day), i] = grid[day][i].replace("\n", "<br>")
-#                         st.markdown(f"**{fname}**")
-#                         st.write(df.to_html(escape=False), unsafe_allow_html=True)
-
-#                         # Download this faculty's PDF
-#                         single = {f"Faculty: {fname}": grid}
-#                         fac_pdf_title = f"Faculty Timetable - {fname}"
-#                         fac_pdf = build_pdf_from_timetable(single, title=fac_pdf_title)
-#                         st.download_button(
-#                             label=f"Download PDF for {fname}",
-#                             data=fac_pdf,
-#                             file_name=f"{fac_pdf_title.replace(' ', '_')}.pdf",
-#                             mime="application/pdf"
-#                         )
-
-#         except ValueError as e:
-#             st.error(f"Configuration Error: {e}")
-#         except Exception as e:
-#             st.error(f"An unexpected error occurred during timetable generation: {e}")
-#             st.exception(e)
 def generate_timetable_page():
     st.header("Timetable Generation")
     user_id = st.session_state['user_id']
     st.write("Configure Genetic Algorithm parameters and click 'Generate'.")
 
-    # ---------- GA Parameter Inputs ----------
+    # GA Parameter Inputs
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        population_size = st.number_input(
-            "Population Size", min_value=50, max_value=1000, value=200, step=50,
-            help="Number of candidate timetables in each generation."
-        )
+        population_size = st.number_input("Population Size", min_value=50, max_value=1000, value=200, step=50, help="Number of candidate timetables in each generation.")
     with col2:
-        generations = st.number_input(
-            "Generations", min_value=100, max_value=5000, value=1000, step=100,
-            help="Number of iterations the algorithm will run."
-        )
+        generations = st.number_input("Generations", min_value=100, max_value=5000, value=1000, step=100, help="Number of iterations the algorithm will run.")
     with col3:
-        mutation_rate = st.slider(
-            "Mutation Rate (per gene)", min_value=0.01, max_value=0.5, value=0.05, step=0.01,
-            help="Probability of a single class assignment changing."
-        )
+        mutation_rate = st.slider("Mutation Rate (per gene)", min_value=0.01, max_value=0.5, value=0.05, step=0.01, help="Probability of a single class assignment changing.")
     with col4:
-        mutation_chance_smart = st.slider(
-            "Smart Mutation Chance", min_value=0.0, max_value=1.0, value=0.8, step=0.05,
-            help="Probability that mutation tries to find an empty slot (0=purely random, 1=always try smart)."
-        )
-    crossover_rate = st.slider(
-        "Crossover Rate", min_value=0.5, max_value=1.0, value=0.8, step=0.05,
-        help="Probability of two parent timetables exchanging genetic material."
-    )
+        mutation_chance_smart = st.slider("Smart Mutation Chance", min_value=0.0, max_value=1.0, value=0.8, step=0.05, help="Probability that mutation tries to find an empty slot (0=purely random, 1=always try smart).")
+    
+    crossover_rate = st.slider("Crossover Rate", min_value=0.5, max_value=1.0, value=0.8, step=0.05, help="Probability of two parent timetables exchanging genetic material.")
 
     st.markdown("---")
 
-    # ---------- Run GA only when button clicked ----------
-    run_clicked = st.button("Generate Timetable", type="primary", key="btn_generate_tt")
-    if run_clicked:
+    if st.button("Generate Timetable", type="primary"):
         st.info("Step 1: Loading required data from the database...")
         try:
             all_raw_data = load_all_data(user_id)
@@ -928,6 +713,7 @@ def generate_timetable_page():
                 return
 
             st.success(f"Loaded data: {len(classes_to_schedule)} scheduled class items to place.")
+            
             st.info("Step 2: Initializing and running Genetic Algorithm...")
 
             ga = GeneticAlgorithm(
@@ -957,127 +743,57 @@ def generate_timetable_page():
 
             progress_bar.progress(100)
             status_text.text("Generation Complete!")
-            time.sleep(0.3)
+            time.sleep(0.5)
 
-            # ---------- Persist result so reruns (e.g., download) keep showing it ----------
             st.session_state['generated_timetable_chromosome'] = best_timetable_chromosome
-            st.session_state['data_for_analysis'] = all_raw_data
-            # provide a default name once
-            if 'save_name' not in st.session_state:
-                st.session_state['save_name'] = f"Timetable_{datetime.now().strftime('%Y%m%d_%H%M')}"
+            st.session_state['data_for_analysis'] = all_raw_data 
 
-            st.success("Timetable generated!")
+            st.subheader("Results")
+            st.write(f"Final Best Fitness: **{best_timetable_chromosome.fitness:.2f}**")
+
+            if best_timetable_chromosome.fitness >= 0:
+                st.balloons()
+                st.success("Timetable generated successfully with all hard constraints satisfied! 🎉")
+            else:
+                st.warning("Timetable generated, but some hard constraints might still be violated. Consider increasing generations or population size, or adjust penalty values.")
+            
+            st.markdown("---")
+            display_generated_timetable(best_timetable_chromosome, all_raw_data)
+
+            # --- Save the timetable snapshot to DB (your existing flow) ---
+            st.markdown("---")
+            st.subheader("Save This Timetable")
+            save_name = st.text_input("Enter a name for this timetable:", value=f"Timetable_{datetime.now().strftime('%Y%m%d_%H%M')}")
+            if st.button("Save Timetable", type="secondary"):
+                if save_name:
+                    if add_saved_timetable(user_id, save_name, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), best_timetable_chromosome, all_raw_data):
+                        st.success(f"Timetable '{save_name}' saved successfully!")
+                    else:
+                        st.error(f"Failed to save timetable. A timetable with the name '{save_name}' might already exist.")
+                else:
+                    st.warning("Please enter a name for the timetable.")
+
+            # --- Export PDF for sharing ---
+            st.markdown("---")
+            st.subheader("Export")
+            try:
+                grids = to_shareable_grids(best_timetable_chromosome, all_raw_data)
+                pdf_title = save_name or f"Timetable_{datetime.now().strftime('%Y%m%d_%H%M')}"
+                pdf_bytes = build_pdf_from_timetable(grids, title=pdf_title)
+                st.download_button(
+                    label="Download Timetable as PDF",
+                    data=pdf_bytes,
+                    file_name=f"{pdf_title.replace(' ', '_')}.pdf",
+                    mime="application/pdf"
+                )
+            except Exception as e:
+                st.warning(f"Could not build PDF: {e}")
 
         except ValueError as e:
             st.error(f"Configuration Error: {e}")
         except Exception as e:
             st.error(f"An unexpected error occurred during timetable generation: {e}")
             st.exception(e)
-
-    # ---------- Show results if we have them in session ----------
-    if 'generated_timetable_chromosome' in st.session_state and 'data_for_analysis' in st.session_state:
-        best_timetable_chromosome = st.session_state['generated_timetable_chromosome']
-        all_raw_data = st.session_state['data_for_analysis']
-
-        st.subheader("Results")
-        st.write(f"Final Best Fitness: **{best_timetable_chromosome.fitness:.2f}**")
-        if best_timetable_chromosome.fitness >= 0:
-            st.success("All hard constraints satisfied 🎉")
-        else:
-            st.warning("Some hard constraints might still be violated—try tuning GA parameters.")
-
-        st.markdown("---")
-        display_generated_timetable(best_timetable_chromosome, all_raw_data)
-
-        # ---------- Save to DB ----------
-        st.markdown("---")
-        st.subheader("Save This Timetable")
-        st.text_input(
-            "Enter a name for this timetable:",
-            key="save_name",
-            help="Will also be used as the default PDF filename."
-        )
-        if st.button("Save Timetable", type="secondary", key="btn_save_tt"):
-            save_name = st.session_state.get('save_name') or f"Timetable_{datetime.now().strftime('%Y%m%d_%H%M')}"
-            if add_saved_timetable(user_id, save_name, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), best_timetable_chromosome, all_raw_data):
-                st.success(f"Timetable '{save_name}' saved successfully!")
-            else:
-                st.error(f"Failed to save timetable. A timetable with the name '{save_name}' might already exist.")
-
-        # ---------- Export whole timetable PDF ----------
-        st.markdown("---")
-        st.subheader("Export (Whole Timetable)")
-        try:
-            grids = to_shareable_grids(best_timetable_chromosome, all_raw_data)
-            pdf_title = st.session_state.get('save_name') or f"Timetable_{datetime.now().strftime('%Y%m%d_%H%M')}"
-            pdf_bytes = build_pdf_from_timetable(grids, title=pdf_title)
-            st.download_button(
-                label="Download Entire Timetable as PDF",
-                data=pdf_bytes,
-                file_name=f"{pdf_title.replace(' ', '_')}.pdf",
-                mime="application/pdf",
-                key="dl_whole_pdf"
-            )
-        except Exception as e:
-            st.warning(f"Could not build PDF: {e}")
-
-        # ---------- Faculty Timetables ----------
-        st.markdown("---")
-        st.subheader("Faculty Timetables")
-        try:
-            fac_grids = build_faculty_grids(best_timetable_chromosome, all_raw_data)
-            if not fac_grids:
-                st.info("No faculty assignments found.")
-            else:
-                choices = []
-                for fid, (fname, grid) in fac_grids.items():
-                    has_any = any(cell for day in grid.values() for cell in day)
-                    if has_any:
-                        choices.append((fid, fname))
-                if not choices:
-                    st.info("No faculty have scheduled classes.")
-                else:
-                    display_names = {fid: fname for fid, fname in choices}
-                    chosen_fid = st.selectbox(
-                        "Select Faculty",
-                        options=[fid for fid, _ in choices],
-                        format_func=lambda fid: display_names[fid],
-                        key="fac_preview_select"
-                    )
-                    if chosen_fid is not None:
-                        fname, grid = fac_grids[chosen_fid]
-                        # Preview table
-                        day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-                        periods_cols = [f"Period {i}" for i in range(1, PERIODS_PER_DAY + 1)]
-                        df = pd.DataFrame('', index=day_order, columns=periods_cols)
-                        for day in day_order:
-                            for i in range(min(PERIODS_PER_DAY, len(grid[day]))):
-                                df.loc[day, periods_cols[i]] = grid[day][i].replace("\n", "<br>")
-                        st.markdown(f"**{fname}**")
-                        st.write(df.to_html(escape=False), unsafe_allow_html=True)
-
-                        # Download single-faculty PDF
-                        single = {f"Faculty: {fname}": grid}
-                        fac_pdf_title = f"{st.session_state.get('save_name', 'Timetable')}-Faculty-{fname}"
-                        fac_pdf = build_pdf_from_timetable(single, title=fac_pdf_title)
-                        st.download_button(
-                            label=f"Download PDF for {fname}",
-                            data=fac_pdf,
-                            file_name=f"{fac_pdf_title.replace(' ', '_')}.pdf",
-                            mime="application/pdf",
-                            key=f"dl_fac_pdf_{chosen_fid}"
-                        )
-        except Exception as e:
-            st.warning(f"Could not prepare faculty timetables: {e}")
-
-        # ---------- Clear generated data (optional utility) ----------
-        st.markdown("---")
-        if st.button("Clear Generated Timetable", key="btn_clear_generated"):
-            for k in ("generated_timetable_chromosome", "data_for_analysis", "save_name"):
-                if k in st.session_state:
-                    del st.session_state[k]
-            st.success("Cleared. You can generate a new timetable now.")
-
 
 def display_generated_timetable(chromosome: TimetableChromosome, all_data):
     st.markdown("##### Timetable by Semester")
@@ -1154,7 +870,7 @@ def analyze_timetable_page():
         ax.set_title(title)
         ax.set_xlabel("Periods")
         ax.set_ylabel("Days")
-        st.pyplot(fig)
+        st.pyplot(fig)  # Use st.pyplot to display matplotlib figures
         plt.clf()
 
     st.subheader("1. Overall Class Distribution")
@@ -1200,7 +916,11 @@ def analyze_timetable_page():
         st.pyplot(fig_bar)
         plt.clf()
 
+    # st.markdown("---")
+    # st.subheader("5")
+    # st.bar_chart(faculty_hours_df, x="Faculty", y="Total Hours")
     st.markdown("---")
+    
     st.subheader("4. Theory vs. Lab Distribution by Period")
 
     theory_per_period = defaultdict(int)
@@ -1210,7 +930,7 @@ def analyze_timetable_page():
         for p in range(sc.start_period, sc.end_period + 1):
             if sc.is_lab:
                 lab_per_period[f"P{p}"] += 1
-            else:
+            else:  # Theory
                 theory_per_period[f"P{p}"] += 1
 
     period_labels = [f"P{i}" for i in range(1, PERIODS_PER_DAY + 1)]
@@ -1318,9 +1038,7 @@ def show_data_management_page():
                     st.error("Failed to delete all data. An unexpected error occurred.")
             st.session_state["confirm_delete_all_user_data"] = False
 
-# -----------------------------
-# App Shell / Navigation
-# -----------------------------
+# --- Main Application Logic ---
 st.sidebar.title("Navigation")
 
 if 'logged_in' not in st.session_state:
@@ -1362,7 +1080,7 @@ if st.session_state['logged_in']:
 else:
     show_login_register_page()
 
-# Display current page
+# Display the current page based on session state
 if st.session_state['logged_in']:
     if st.session_state['current_page'] == "welcome":
         show_welcome_page()
