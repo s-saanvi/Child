@@ -6,13 +6,8 @@ import time
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
-from io import BytesIO
-from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-from reportlab.lib.styles import getSampleStyleSheet
 
-from database import (
+from database1 import (
     init_db, add_user, get_user, check_password,
     add_department, get_departments, update_department, delete_department,
     add_semester, get_semesters, delete_semester,
@@ -23,13 +18,12 @@ from database import (
     add_faculty_preference, get_faculty_preferences, get_faculty_preferences_by_faculty_id, delete_faculty_preference,
     load_all_data, get_classes_to_schedule,
     add_saved_timetable, get_saved_timetables, load_saved_timetable_data, delete_saved_timetable,
-    delete_all_user_data, create_timetables_table
+    delete_all_user_data
 )
 from genetic_algorithm import GeneticAlgorithm, TimetableChromosome, PERIODS_PER_DAY
 
 # Initialize the database (this will create tables if they don't exist)
 init_db()
-create_timetables_table()
 
 # --- Utility for Confirmation Dialog (Replacement for st.confirm) ---
 def confirm_action(message, key_prefix):
@@ -42,96 +36,7 @@ def confirm_action(message, key_prefix):
         if st.button("No, cancel", key=f"{key_prefix}_no_button"):
             st.info("Action cancelled.")
             return False
-    return None  # Return None if no button has been pressed yet
-
-# --- PDF builder for timetable export ---
-def build_pdf_from_timetable(grids_by_semester: dict, title: str = "Automatic Timetable") -> bytes:
-    """
-    grids_by_semester: dict[str -> dict[DAY -> list[slot strings]]]
-    Returns PDF bytes.
-    """
-    buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=landscape(A4),
-        leftMargin=24, rightMargin=24, topMargin=24, bottomMargin=24
-    )
-    styles = getSampleStyleSheet()
-    story = []
-
-    story.append(Paragraph(title, styles["Title"]))
-    story.append(Spacer(1, 12))
-
-    # Use your app's day names
-    day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-
-    for sem_name, day_map in grids_by_semester.items():
-        max_slots = max((len(v) for v in day_map.values()), default=0)
-        header = ["Day"] + [f"Slot {i+1}" for i in range(max_slots)]
-        data = [header]
-
-        for day in day_order:
-            if day not in day_map:
-                continue
-            slots = day_map[day]
-            row = [day] + slots + [""] * (max_slots - len(slots))
-            data.append(row)
-
-        story.append(Paragraph(f"Semester: {sem_name}", styles["Heading2"]))
-        t = Table(data, repeatRows=1)
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
-            ("TEXTCOLOR", (0,0), (-1,0), colors.black),
-            ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
-            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-            ("ALIGN", (1,1), (-1,-1), "CENTER"),
-            ("FONTSIZE", (0,0), (-1,-1), 9),
-            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.whitesmoke, colors.lightyellow]),
-        ]))
-        story.append(t)
-        story.append(Spacer(1, 12))
-        story.append(PageBreak())
-
-    doc.build(story)
-    pdf_bytes = buf.getvalue()
-    buf.close()
-    return pdf_bytes
-
-# --- Convert GA result → grids for saving/export ---
-def to_shareable_grids(chromosome: TimetableChromosome, all_data) -> dict:
-    """
-    Build grids for PDF from the GA result:
-    Returns: { "Semester X": { "Monday": [cell0..], "Tuesday": [...], ... } }
-    """
-    day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-    slots_per_day = PERIODS_PER_DAY
-
-    # group classes by semester
-    by_sem = defaultdict(list)
-    for sc in chromosome.scheduled_classes:
-        by_sem[sc.semester_id].append(sc)
-
-    grids = {}
-    for sem_id, entries in by_sem.items():
-        sem_obj = all_data['semesters_by_id'].get(sem_id)
-        sem_name = f"Semester {getattr(sem_obj, 'semester_number', sem_id)}"
-        # init blank grid
-        grids[sem_name] = {d: [""] * slots_per_day for d in day_order}
-
-        for sc in entries:
-            course_code = sc.course_obj.code if sc.course_obj else ""
-            fac_names = ", ".join([f.name for f in sc.faculty_objs]) if sc.faculty_objs else ""
-            cell_text = f"{course_code}\n({fac_names})" if fac_names else course_code
-
-            # Fill all periods occupied by this class
-            for p in range(sc.start_period, sc.end_period + 1):
-                if 1 <= p <= slots_per_day and sc.day in grids[sem_name]:
-                    idx = p - 1  # zero-based
-                    if grids[sem_name][sc.day][idx]:
-                        grids[sem_name][sc.day][idx] += f"\n—\n{cell_text}"  # collision mark
-                    else:
-                        grids[sem_name][sc.day][idx] = cell_text
-    return grids
+    return None # Return None if no button has been pressed yet
 
 # --- Page Navigation Functions ---
 def set_page(page_name):
@@ -151,7 +56,7 @@ def show_login_register_page():
             if user and check_password(password, user['password_hash']):
                 st.session_state['logged_in'] = True
                 st.session_state['username'] = username
-                st.session_state['user_id'] = user['id']  # Store user ID
+                st.session_state['user_id'] = user['id'] # Store user ID
                 st.success("Logged in successfully!")
                 set_page("welcome")
                 st.rerun()
@@ -176,6 +81,9 @@ def show_login_register_page():
                 st.warning("Please enter a username and password.")
 
 def show_welcome_page():
+    #st.image("assets/timetable_banner.png", use_container_width=True)
+
+
     st.title(f"Welcome, {st.session_state.get('username', 'User')}!")
     st.markdown(
         """
@@ -188,8 +96,12 @@ def show_welcome_page():
         🔹 Analyze Faculty Workload & Class Distribution  
         🔹 Save and Reuse Timetables Anytime  
         """
+    
     )
+    #st.write("Use the sidebar to navigate through the application.")
     st.success("👉 Use the sidebar to navigate through different sections.")
+
+    # Footer
     st.markdown("---")
     st.markdown(
         """
@@ -226,12 +138,7 @@ def manage_departments_page():
 
         st.subheader("Edit / Delete Department")
         dept_names = {dept['id']: dept['name'] for dept in departments}
-        selected_dept_id = st.selectbox(
-            "Select Department to Edit/Delete",
-            options=list(dept_names.keys()),
-            format_func=lambda x: dept_names[x],
-            key="edit_delete_dept_select"
-        )
+        selected_dept_id = st.selectbox("Select Department to Edit/Delete", options=list(dept_names.keys()), format_func=lambda x: dept_names[x], key="edit_delete_dept_select")
 
         if selected_dept_id:
             current_dept_name = dept_names[selected_dept_id]
@@ -246,20 +153,19 @@ def manage_departments_page():
                         st.error("Failed to update department. Name might already exist.")
             with col2:
                 if st.button("Delete Department", type="secondary", key="init_delete_dept_button"):
+                    # Use session state to manage confirmation step
                     st.session_state[f"confirm_delete_dept_{selected_dept_id}"] = True
 
             if st.session_state.get(f"confirm_delete_dept_{selected_dept_id}", False):
-                confirmed = confirm_action(
-                    f"Are you sure you want to delete '{current_dept_name}'? This cannot be undone and may affect associated data.",
-                    f"confirm_del_dept_{selected_dept_id}"
-                )
-                if confirmed is not None:
+                confirmed = confirm_action(f"Are you sure you want to delete '{current_dept_name}'? This cannot be undone and may affect associated data.", f"confirm_del_dept_{selected_dept_id}")
+                if confirmed is not None: # If user clicked Yes or No
                     if confirmed:
                         if delete_department(user_id, selected_dept_id):
                             st.success(f"Department '{current_dept_name}' deleted.")
                             st.rerun()
                         else:
                             st.error(f"Failed to delete department '{current_dept_name}'. It might have associated records or delete failed.")
+                    # Clear confirmation state regardless
                     st.session_state[f"confirm_delete_dept_{selected_dept_id}"] = False
     else:
         st.info("No departments added yet.")
@@ -286,22 +192,14 @@ def manage_departments_page():
 
         st.subheader("Delete Semester")
         sem_options = {sem['id']: sem['semester_number'] for sem in semesters}
-        selected_sem_id = st.selectbox(
-            "Select Semester to Delete",
-            options=list(sem_options.keys()),
-            format_func=lambda x: f"Semester {sem_options[x]}",
-            key="delete_sem_select"
-        )
+        selected_sem_id = st.selectbox("Select Semester to Delete", options=list(sem_options.keys()), format_func=lambda x: f"Semester {sem_options[x]}", key="delete_sem_select")
         if selected_sem_id:
             current_sem_num = sem_options[selected_sem_id]
             if st.button("Delete Selected Semester", type="secondary", key="init_delete_sem_button"):
                 st.session_state[f"confirm_delete_sem_{selected_sem_id}"] = True
-
+            
             if st.session_state.get(f"confirm_delete_sem_{selected_sem_id}", False):
-                confirmed = confirm_action(
-                    f"Are you sure you want to delete Semester {current_sem_num}? This cannot be undone.",
-                    f"confirm_del_sem_{selected_sem_id}"
-                )
+                confirmed = confirm_action(f"Are you sure you want to delete Semester {current_sem_num}? This cannot be undone.", f"confirm_del_sem_{selected_sem_id}")
                 if confirmed is not None:
                     if confirmed:
                         if delete_semester(user_id, selected_sem_id):
@@ -327,12 +225,7 @@ def manage_faculty_page():
     with st.expander("Add New Faculty"):
         faculty_name = st.text_input("Faculty Name")
         faculty_emp_id = st.text_input("Employee ID")
-        selected_dept_id = st.selectbox(
-            "Department",
-            options=list(dept_options.keys()),
-            format_func=lambda x: dept_options[x],
-            key="add_faculty_dept_select"
-        )
+        selected_dept_id = st.selectbox("Department", options=list(dept_options.keys()), format_func=lambda x: dept_options[x], key="add_faculty_dept_select")
 
         if st.button("Add Faculty"):
             if faculty_name and faculty_emp_id and selected_dept_id:
@@ -353,12 +246,7 @@ def manage_faculty_page():
 
         st.subheader("Edit / Delete Faculty")
         faculty_options = {f['id']: f['name'] for f in faculty}
-        selected_faculty_id = st.selectbox(
-            "Select Faculty to Edit/Delete",
-            options=list(faculty_options.keys()),
-            format_func=lambda x: faculty_options[x],
-            key="edit_delete_faculty_select"
-        )
+        selected_faculty_id = st.selectbox("Select Faculty to Edit/Delete", options=list(faculty_options.keys()), format_func=lambda x: faculty_options[x], key="edit_delete_faculty_select")
 
         if selected_faculty_id:
             current_faculty = next((f for f in faculty if f['id'] == selected_faculty_id), None)
@@ -368,13 +256,7 @@ def manage_faculty_page():
                     new_name = st.text_input("New Name", value=current_faculty['name'], key="edit_faculty_name")
                     new_emp_id = st.text_input("New Employee ID", value=current_faculty['emp_id'], key="edit_faculty_emp_id")
                     current_dept_id = current_faculty['department_id']
-                    new_dept_id = st.selectbox(
-                        "New Department",
-                        options=list(dept_options.keys()),
-                        index=list(dept_options.keys()).index(current_dept_id) if current_dept_id in dept_options else 0,
-                        format_func=lambda x: dept_options[x],
-                        key="edit_faculty_dept_select"
-                    )
+                    new_dept_id = st.selectbox("New Department", options=list(dept_options.keys()), index=list(dept_options.keys()).index(current_dept_id) if current_dept_id in dept_options else 0, format_func=lambda x: dept_options[x], key="edit_faculty_dept_select")
 
                     if st.button("Update Faculty"):
                         if new_name and new_emp_id and new_dept_id:
@@ -388,12 +270,9 @@ def manage_faculty_page():
                 with col2:
                     if st.button("Delete Faculty", type="secondary", key="init_delete_faculty_button"):
                         st.session_state[f"confirm_delete_faculty_{selected_faculty_id}"] = True
-
+                    
                     if st.session_state.get(f"confirm_delete_faculty_{selected_faculty_id}", False):
-                        confirmed = confirm_action(
-                            f"Are you sure you want to delete '{current_faculty['name']}'? This cannot be undone and may affect associated mappings.",
-                            f"confirm_del_faculty_{selected_faculty_id}"
-                        )
+                        confirmed = confirm_action(f"Are you sure you want to delete '{current_faculty['name']}'? This cannot be undone and may affect associated mappings.", f"confirm_del_faculty_{selected_faculty_id}")
                         if confirmed is not None:
                             if confirmed:
                                 if delete_faculty(user_id, selected_faculty_id):
@@ -414,9 +293,8 @@ def manage_courses_page():
         course_name  = st.text_input("Course Name (e.g., Data Structures)")
         course_type = st.radio("Course Type", ('theory', 'lab'))
 
-        hours_per_week = st.number_input("Hours per week (Theory)", min_value=1, step=1) if course_type == 'theory' else 2  # Fixed for labs
-        if course_type == 'lab':
-            st.write("Lab courses are fixed at 2 hours continuously.")
+        hours_per_week = st.number_input("Hours per week (Theory)", min_value=1, step=1) if course_type == 'theory' else 2 # Fixed for labs
+        if course_type == 'lab': st.write("Lab courses are fixed at 2 hours continuously.")
         
         if st.button("Add Course"):
             if course_code and course_name and hours_per_week:
@@ -437,12 +315,7 @@ def manage_courses_page():
 
         st.subheader("Edit / Delete Course")
         course_options = {c['id']: f"{c['code']} - {c['name']} ({c['type'].capitalize()})" for c in courses}
-        selected_course_id = st.selectbox(
-            "Select Course to Edit/Delete",
-            options=list(course_options.keys()),
-            format_func=lambda x: course_options[x],
-            key="edit_delete_course_select"
-        )
+        selected_course_id = st.selectbox("Select Course to Edit/Delete", options=list(course_options.keys()), format_func=lambda x: course_options[x], key="edit_delete_course_select")
 
         if selected_course_id:
             current_course = next((c for c in courses if c['id'] == selected_course_id), None)
@@ -471,10 +344,7 @@ def manage_courses_page():
                         st.session_state[f"confirm_delete_course_{selected_course_id}"] = True
                     
                     if st.session_state.get(f"confirm_delete_course_{selected_course_id}", False):
-                        confirmed = confirm_action(
-                            f"Are you sure you want to delete '{current_course['name']}' ({current_course['code']})? This cannot be undone and may affect associated mappings.",
-                            f"confirm_del_course_{selected_course_id}"
-                        )
+                        confirmed = confirm_action(f"Are you sure you want to delete '{current_course['name']}' ({current_course['code']})? This cannot be undone and may affect associated mappings.", f"confirm_del_course_{selected_course_id}")
                         if confirmed is not None:
                             if confirmed:
                                 if delete_course(user_id, selected_course_id):
@@ -509,8 +379,7 @@ def manage_mapping_page():
 
     st.subheader("Theory Course Mapping")
     with st.expander("Add New Theory Mapping"):
-        if not theory_courses:
-            st.info("No theory courses available to map.")
+        if not theory_courses: st.info("No theory courses available to map.")
         else:
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -533,8 +402,7 @@ def manage_mapping_page():
     st.markdown("---")
     st.subheader("Lab Course Mapping")
     with st.expander("Add New Lab Mapping"):
-        if not lab_courses:
-            st.info("No lab courses available to map.")
+        if not lab_courses: st.info("No lab courses available to map.")
         else:
             col1, col2, col3, col4 = st.columns(4)
             with col1:
@@ -568,12 +436,7 @@ def manage_mapping_page():
         
         st.subheader("Delete Theory Mapping")
         theory_map_options = {tm['id']: f"Sem {tm['semester_number']}: {tm['course_name']} by {tm['faculty_name']}" for tm in theory_mappings}
-        selected_theory_map_id = st.selectbox(
-            "Select Theory Mapping to Delete",
-            options=list(theory_map_options.keys()),
-            format_func=lambda x: theory_map_options[x],
-            key="delete_theory_map_select"
-        )
+        selected_theory_map_id = st.selectbox("Select Theory Mapping to Delete", options=list(theory_map_options.keys()), format_func=lambda x: theory_map_options[x], key="delete_theory_map_select")
         if selected_theory_map_id:
             if st.button("Delete Selected Theory Mapping", type="secondary"):
                 if delete_theory_mapping(user_id, selected_theory_map_id):
@@ -593,12 +456,7 @@ def manage_mapping_page():
 
         st.subheader("Delete Lab Mapping")
         lab_map_options = {lm['id']: f"Sem {lm['semester_number']}: {lm['lab_course_name']} by {lm['faculty_1_name']} & {lm['faculty_2_name']}" for lm in lab_mappings}
-        selected_lab_map_id = st.selectbox(
-            "Select Lab Mapping to Delete",
-            options=list(lab_map_options.keys()),
-            format_func=lambda x: lab_map_options[x],
-            key="delete_lab_map_select"
-        )
+        selected_lab_map_id = st.selectbox("Select Lab Mapping to Delete", options=list(lab_map_options.keys()), format_func=lambda x: lab_map_options[x], key="delete_lab_map_select")
         if selected_lab_map_id:
             if st.button("Delete Selected Lab Mapping", type="secondary"):
                 if delete_lab_mapping(user_id, selected_lab_map_id):
@@ -636,11 +494,7 @@ def manage_faculty_preferences_page():
         if if_start_greater_than_end:
             st.error("Period Start cannot be greater than Period End.")
 
-        preference_type = st.radio(
-            "Preference Type",
-            ('blocked', 'preferred'),
-            help="Blocked: Faculty cannot be assigned any class. Preferred: Faculty prefers to teach at this time (soft constraint, can be overridden if necessary)."
-        )
+        preference_type = st.radio("Preference Type", ('blocked', 'preferred'), help="Blocked: Faculty cannot be assigned any class. Preferred: Faculty prefers to teach at this time (soft constraint, can be overridden if necessary).")
 
         if st.button("Add Preference"):
             if selected_faculty_id and selected_day and period_start and period_end and not if_start_greater_than_end:
@@ -660,12 +514,7 @@ def manage_faculty_preferences_page():
 
         st.subheader("Delete Faculty Preference")
         pref_options = {p['id']: f"{p['faculty_name']}: {p['day']} {p['period_start']}-{p['period_end']} ({p['preference_type']})" for p in preferences}
-        selected_pref_id = st.selectbox(
-            "Select Preference to Delete",
-            options=list(pref_options.keys()),
-            format_func=lambda x: pref_options[x],
-            key="delete_pref_select"
-        )
+        selected_pref_id = st.selectbox("Select Preference to Delete", options=list(pref_options.keys()), format_func=lambda x: pref_options[x], key="delete_pref_select")
         if selected_pref_id:
             if st.button("Delete Selected Preference", type="secondary"):
                 if delete_faculty_preference(user_id, selected_pref_id):
@@ -693,6 +542,7 @@ def generate_timetable_page():
         mutation_chance_smart = st.slider("Smart Mutation Chance", min_value=0.0, max_value=1.0, value=0.8, step=0.05, help="Probability that mutation tries to find an empty slot (0=purely random, 1=always try smart).")
     
     crossover_rate = st.slider("Crossover Rate", min_value=0.5, max_value=1.0, value=0.8, step=0.05, help="Probability of two parent timetables exchanging genetic material.")
+
 
     st.markdown("---")
 
@@ -760,7 +610,6 @@ def generate_timetable_page():
             st.markdown("---")
             display_generated_timetable(best_timetable_chromosome, all_raw_data)
 
-            # --- Save the timetable snapshot to DB (your existing flow) ---
             st.markdown("---")
             st.subheader("Save This Timetable")
             save_name = st.text_input("Enter a name for this timetable:", value=f"Timetable_{datetime.now().strftime('%Y%m%d_%H%M')}")
@@ -772,22 +621,6 @@ def generate_timetable_page():
                         st.error(f"Failed to save timetable. A timetable with the name '{save_name}' might already exist.")
                 else:
                     st.warning("Please enter a name for the timetable.")
-
-            # --- Export PDF for sharing ---
-            st.markdown("---")
-            st.subheader("Export")
-            try:
-                grids = to_shareable_grids(best_timetable_chromosome, all_raw_data)
-                pdf_title = save_name or f"Timetable_{datetime.now().strftime('%Y%m%d_%H%M')}"
-                pdf_bytes = build_pdf_from_timetable(grids, title=pdf_title)
-                st.download_button(
-                    label="Download Timetable as PDF",
-                    data=pdf_bytes,
-                    file_name=f"{pdf_title.replace(' ', '_')}.pdf",
-                    mime="application/pdf"
-                )
-            except Exception as e:
-                st.warning(f"Could not build PDF: {e}")
 
         except ValueError as e:
             st.error(f"Configuration Error: {e}")
@@ -807,8 +640,7 @@ def display_generated_timetable(chromosome: TimetableChromosome, all_data):
 
     for sem_id in sorted(timetables_by_semester.keys()):
         classes_for_sem = timetables_by_semester[sem_id]
-        sem_obj = all_data['semesters_by_id'].get(sem_id)
-        sem_name = sem_obj.semester_number if sem_obj else sem_id
+        sem_name = all_data['semesters_by_id'][sem_id].semester_number
         st.markdown(f"**Semester {sem_name} Timetable**")
 
         timetable_df = pd.DataFrame('', index=days, columns=periods_cols)
@@ -820,10 +652,10 @@ def display_generated_timetable(chromosome: TimetableChromosome, all_data):
                     day_str = sc.day
                     period_col_name = f"Period {period_index}"
 
-                    course_info = sc.course_obj.code if sc.course_obj else ""
-                    faculty_names = ", ".join([f.name for f in sc.faculty_objs]) if sc.faculty_objs else ""
+                    course_info = sc.course_obj.code
+                    faculty_names = ", ".join([f.name for f in sc.faculty_objs])
 
-                    cell_content = f"{course_info}<br>({faculty_names})" if faculty_names else course_info
+                    cell_content = f"{course_info}<br>({faculty_names})"
                     
                     current_cell_value = timetable_df.loc[day_str, period_col_name]
                     if current_cell_value == '':
@@ -835,7 +667,7 @@ def display_generated_timetable(chromosome: TimetableChromosome, all_data):
         st.markdown("---")
 
     st.markdown("##### Raw Scheduled Class Details")
-    sc_data = []
+    sc_data = [] # ... (your existing raw data collection logic)
     for sc in chromosome.scheduled_classes:
         sc_data.append({
             "Semester": sc.semester_obj.semester_number if sc.semester_obj else sc.semester_id,
@@ -870,7 +702,7 @@ def analyze_timetable_page():
         ax.set_title(title)
         ax.set_xlabel("Periods")
         ax.set_ylabel("Days")
-        st.pyplot(fig)  # Use st.pyplot to display matplotlib figures
+        st.pyplot(fig) # Use st.pyplot to display matplotlib figures
         plt.clf()
 
     st.subheader("1. Overall Class Distribution")
@@ -916,11 +748,7 @@ def analyze_timetable_page():
         st.pyplot(fig_bar)
         plt.clf()
 
-    # st.markdown("---")
-    # st.subheader("5")
-    # st.bar_chart(faculty_hours_df, x="Faculty", y="Total Hours")
     st.markdown("---")
-    
     st.subheader("4. Theory vs. Lab Distribution by Period")
 
     theory_per_period = defaultdict(int)
@@ -930,7 +758,7 @@ def analyze_timetable_page():
         for p in range(sc.start_period, sc.end_period + 1):
             if sc.is_lab:
                 lab_per_period[f"P{p}"] += 1
-            else:  # Theory
+            else: # Theory
                 theory_per_period[f"P{p}"] += 1
 
     period_labels = [f"P{i}" for i in range(1, PERIODS_PER_DAY + 1)]
@@ -968,12 +796,7 @@ def show_saved_timetables_page():
 
     st.subheader("Load / Delete Saved Timetable")
     saved_tt_options = {tt['id']: f"{tt['timetable_name']} (Generated: {tt['generated_on']})" for tt in saved_timetables}
-    selected_saved_tt_id = st.selectbox(
-        "Select Timetable",
-        options=list(saved_tt_options.keys()),
-        format_func=lambda x: saved_tt_options[x],
-        key="select_saved_tt"
-    )
+    selected_saved_tt_id = st.selectbox("Select Timetable", options=list(saved_tt_options.keys()), format_func=lambda x: saved_tt_options[x], key="select_saved_tt")
 
     if selected_saved_tt_id:
         current_saved_tt_name = saved_tt_options[selected_saved_tt_id]
@@ -994,10 +817,7 @@ def show_saved_timetables_page():
                 st.session_state[f"confirm_delete_saved_tt_{selected_saved_tt_id}"] = True
             
             if st.session_state.get(f"confirm_delete_saved_tt_{selected_saved_tt_id}", False):
-                confirmed = confirm_action(
-                    f"Are you sure you want to delete '{current_saved_tt_name}'?",
-                    f"confirm_del_saved_tt_{selected_saved_tt_id}"
-                )
+                confirmed = confirm_action(f"Are you sure you want to delete '{current_saved_tt_name}'?", f"confirm_del_saved_tt_{selected_saved_tt_id}")
                 if confirmed is not None:
                     if confirmed:
                         if delete_saved_timetable(user_id, selected_saved_tt_id):
@@ -1017,14 +837,11 @@ def show_data_management_page():
     
     st.markdown("---")
     st.subheader("Delete All My Data")
-    if st.button("Initiate Deletion of All My Data", type="primary", key="init_delete_all_data"):
+    if st.button("Initiate Deletion of All My Data", type="danger", key="init_delete_all_data"):
         st.session_state["confirm_delete_all_user_data"] = True
     
     if st.session_state.get("confirm_delete_all_user_data", False):
-        confirmed = confirm_action(
-            f"<span style='color:red; font-weight:bold;'>WARNING:</span> Are you absolutely sure you want to delete ALL data for {username}? This cannot be undone!",
-            "confirm_del_all_data"
-        )
+        confirmed = confirm_action(f"<span style='color:red; font-weight:bold;'>WARNING:</span> Are you absolutely sure you want to delete ALL data for {username}? This cannot be undone!", "confirm_del_all_data")
         if confirmed is not None:
             if confirmed:
                 if delete_all_user_data(user_id):
@@ -1037,6 +854,7 @@ def show_data_management_page():
                 else:
                     st.error("Failed to delete all data. An unexpected error occurred.")
             st.session_state["confirm_delete_all_user_data"] = False
+
 
 # --- Main Application Logic ---
 st.sidebar.title("Navigation")
@@ -1079,6 +897,7 @@ if st.session_state['logged_in']:
         st.rerun()
 else:
     show_login_register_page()
+
 
 # Display the current page based on session state
 if st.session_state['logged_in']:

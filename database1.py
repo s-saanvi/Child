@@ -13,7 +13,6 @@ DATABASE_NAME = "timetable.db"
 def get_db_connection():
     conn = sqlite3.connect(DATABASE_NAME)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 def init_db():
@@ -253,23 +252,15 @@ def add_faculty(user_id, name, emp_id, department_id):
 def get_faculty(user_id):
     conn = get_db_connection()
     cursor = conn.cursor()
-    # cursor.execute("""
-    #     SELECT f.id, f.name, f.emp_id, d.name as department_name, f.department_id
-    #     FROM faculty f LEFT JOIN departments d ON f.department_id = d.id WHERE f.user_id = ?
-    # """, (user_id, user_id))
-    # faculty = cursor.fetchall()
-    # conn.close()
-    # return faculty
     cursor.execute("""
-        SELECT f.id, f.name, f.emp_id, f.department_id, d.name AS department_name
+        SELECT f.id, f.name, f.emp_id, d.name as department_name, f.department_id
         FROM faculty f
-        LEFT JOIN departments d ON f.department_id = d.id
-        WHERE f.user_id = ?
-        ORDER BY f.name COLLATE NOCASE
-    """, (user_id,))  # <-- single param tuple
-    rows = cursor.fetchall()
+        JOIN departments d ON f.department_id = d.id
+        WHERE f.user_id = ? AND d.user_id = ?
+    """, (user_id, user_id))
+    faculty = cursor.fetchall()
     conn.close()
-    return rows
+    return faculty
 
 def update_faculty(user_id, faculty_id, new_name, new_emp_id, new_department_id):
     conn = get_db_connection()
@@ -741,95 +732,3 @@ def delete_all_user_data(user_id):
         return False
     finally:
         conn.close()
-
-#######
-# --- Timetable storage: schema + helpers -------------------------------------
-import json
-from typing import Optional, List, Dict, Any, Tuple
-
-def create_timetables_table():
-    """Create a table to store user timetables (one row per saved timetable)."""
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS timetables (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            data_json TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(user_id, name),
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-def save_timetable(user_id: int, name: str, data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
-    """
-    Save a timetable (as JSON) for a user with a human-friendly name.
-    Returns (ok, error_message).
-    """
-    conn = get_db_connection()
-    cur = conn.cursor()
-    try:
-        cur.execute("""
-            INSERT INTO timetables (user_id, name, data_json)
-            VALUES (?, ?, ?)
-        """, (user_id, name.strip(), json.dumps(data)))
-        conn.commit()
-        return True, None
-    except sqlite3.IntegrityError:
-        return False, "A timetable with this name already exists."
-    finally:
-        conn.close()
-
-def list_timetables(user_id: int) -> List[sqlite3.Row]:
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, name, created_at
-        FROM timetables
-        WHERE user_id = ?
-        ORDER BY datetime(created_at) DESC
-    """, (user_id,))
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-def get_timetable(user_id: int, timetable_id: int) -> Optional[Dict[str, Any]]:
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, name, data_json, created_at
-        FROM timetables
-        WHERE user_id = ? AND id = ?
-        LIMIT 1
-    """, (user_id, timetable_id))
-    row = cur.fetchone()
-    conn.close()
-    if row:
-        return {
-            "id": row["id"],
-            "name": row["name"],
-            "created_at": row["created_at"],
-            "data": json.loads(row["data_json"])
-        }
-    return None
-
-def delete_timetable(user_id: int, timetable_id: int) -> bool:
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        DELETE FROM timetables
-        WHERE user_id = ? AND id = ?
-    """, (user_id, timetable_id))
-    conn.commit()
-    ok = cur.rowcount > 0
-    conn.close()
-    return ok
-# -----------------------------------------------------------------------------
-
-
-# Call this once during startup/init (where you create other tables):
-# create_timetables_table()
